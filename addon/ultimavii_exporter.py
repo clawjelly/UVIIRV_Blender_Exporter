@@ -4,12 +4,15 @@
 # Version
 # 0.1:
 # - First Version
+# 0.2:
+# - Adding new name convention
+# - Fixed shapetable script bug
 # --------------------------------------------------------------------------------
 
 bl_info = {
     "name": "Ultima VII Revisited Exporter",
     "author": "Oliver Reischl <clawjelly@gmail.net>",
-    "version": (1, 0),
+    "version": (0, 2),
     "blender": (4, 40, 0),
     "description": "Allows to export meshes directly into the game.",
 }
@@ -32,6 +35,9 @@ class ShapeType(IntEnum):
     CUBOID = 1
     FLAT = 2
     MESH = 3
+    CHARACTER = 4
+    POINTER = 5
+    DONTDRAW = 6
 
 class ShapeEntry:
     """Represents an entry in the shape table"""
@@ -43,9 +49,11 @@ class ShapeEntry:
         self.scale = Vector((1,1,1))
         self.position = Vector((0,0,0))
         self.filepath = ""
+        self.script="Default"
 
     # Examples:
-    # 889 0 0 0  8  8 0  8  8 33  8 0 33  8 3 1 0.9 0.7 0.1 0.2 0.3 0 1 2 2 3 3 1 Models/3dmodels/lamp-post-0.obj 1 0 889 0  
+    # 889 0 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 0 func_0379 
+    # 889 1 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 1 func_0379  
     # 889 0 0 0  8  8 0  8  8 33  8 0 33  8 3 1   1   1   0   0   0 0 1 2 2 3 3 1 Models/3dmodels/lamp-post-0.obj 1 0 889 0 
     # 889 1 0 0  8  8 0  8  8 33  8 0 33  8 0 1   1   1   0   0   0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 1
     # 890 0 1 1 43 22 1 23 41  8 44 1  8 20 1 1   1   1   0   0   0 0 0 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 890 0 
@@ -63,6 +71,7 @@ class ShapeEntry:
         line += " ".join([f"{v}" for v in self.vals_02])
         line += f" {self.filepath} "
         line += " ".join([f"{v}" for v in self.vals_03])
+        line += f" {self.script}"
         line += " \n"
         return line
 
@@ -78,7 +87,12 @@ class ShapeEntry:
         se.position = Vector( (float(values[18]),float(values[19]), float(values[20]) ) )
         se.vals_02 = [int(v) for v in values[21:28]] # Todo: Find out, what these vals are
         se.filepath = values[28]
-        se.vals_03 = [int(v) for v in values[29:]] # Todo: Find out, what these vals are
+        se.vals_03 = [int(v) for v in values[29:33]] # Todo: Find out, what these vals are
+        try:
+            se.script = values[33]
+        except Exception as e:
+            # print(f"WARNING: No script found for shape {values[0]}!")
+            se.script = "Default"
         return se
 
 
@@ -110,6 +124,15 @@ class ShapeTable:
 # --------------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------------
+
+def model_to_filename(obj):
+    """ Generates a standardized obj name """
+    # <object name>_<shape number>x<frame number>
+    return f"{obj.name.lower()}_{obj.uvii_export_settings.shape_id:004d}x{obj.uvii_export_settings.frame:002d}"
+
+def full_export_filepath(obj):
+    addon_prefs = bpy.context.preferences.addons["ultimavii_exporter"].preferences
+    return Path(addon_prefs.game_path) / "Models" / "3dmodels" / (model_to_filename(obj)+obj.uvii_export_settings.format_suffix())
 
 def add_to_modelnames(objname):
     """Writes the model name into the modelnames.txt file"""
@@ -201,8 +224,8 @@ class SCRIPTS_AP_uvii_settings(AddonPreferences):
 
     write_modelnames: bpy.props.BoolProperty(
         name="Modelnames",
-        default=True,
-        description="Write the object data to the modelnames.txt"
+        default=False,
+        description="Write the object data to the modelnames.txt. DEPRECATED - Now loads every model."
     )
 
     def draw(self, context):
@@ -222,7 +245,7 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
 
     export_path: bpy.props.StringProperty(
         name="Export Path",
-        description="Where the file is exported to",
+        description="Where the file is exported to. DEPRECATED, is now generated from the object name.",
         default="",
         # subtype="FILE_PATH",
         subtype="NONE",
@@ -245,6 +268,12 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         name="Shape ID",
         default=0,
         description="The ID of the shape. Somewhere from 150 to 1023"
+    )
+
+    frame: bpy.props.IntProperty(
+        name="Frame Number",
+        default=0,
+        description="The animation frame. If not animated, set it to 0."
     )
 
     count: bpy.props.IntProperty(
@@ -282,6 +311,13 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
             ("3", "Mesh", "A fully meshed object.", "MONKEY", 3)
             ]
         )
+
+    script_name: bpy.props.StringProperty(
+        name="Script Name",
+        description="My String.",
+        default="Default",
+        maxlen=0
+    )
 
     def format_suffix(self):
         if self.export_format == "OBJ":
@@ -404,6 +440,8 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
         # need to make sure active object is selected, otherwise exporting empty file!
         obj.select_set(True)        
         settings = obj.uvii_export_settings
+        export_path = full_export_filepath(obj)
+        settings.export_path = str(export_path)
 
         # export shape mesh
         bpy.ops.wm.obj_export(
@@ -454,7 +492,7 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
                 print(f"Did not find {settings.shape_id} in shapetable.dat!")
 
         bpy.context.window_manager.popup_menu(
-            lambda self, ctx: ( [self.layout.label(text=x) for x in [f"Successfully exported {obj.name}"]] ),
+            lambda self, ctx: ( [self.layout.label(text=x) for x in [f"Successfully exported '{full_export_filepath(obj).name}"]] ),
             title="Info", 
             icon='INFO')
 
@@ -526,7 +564,7 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
     bl_space_type="VIEW_3D"
     bl_region_type="UI"
     bl_category="UVII Revisited"
-    bl_label="UVII Revisited ultimavii_exporter"
+    bl_label="UVII Revisited Exporter"
 
     def draw(self, context):
         box = self.layout.box()
@@ -555,16 +593,18 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
 
         settings = context.active_object.uvii_export_settings
 
-        split = box.split(factor=.9, align=True)
-        split.prop(settings, "export_path")
-        split.operator("scripts.uvii_select_filepath", text="", icon="FILE_FOLDER")
+        # split = box.split(factor=.9, align=True)
+        # split.prop(settings, "export_path")
+        # split.operator("scripts.uvii_select_filepath", text="", icon="FILE_FOLDER")
         if settings.export_path!="":
             try:
-                box.label(text=f"Mesh Name:   \"{settings.mesh_name()}\"")
+                box.label(text=f"Export Name:   \"{model_to_filename(context.active_object)}\"")
             except Exception as e:
                 box.label(text="Not a viable path.")
         box.prop(settings, "export_format")
-        box.prop(settings, "shape_id")
+        split = box.split()
+        split.prop(settings, "shape_id")
+        split.prop(settings, "frame")
         # box.prop(settings, "count")
         box.prop(settings, "shape_type")
         row = box.split()
@@ -618,17 +658,23 @@ if __name__ == "__main__":
     base_gamepath = Path(r"A:\Ultima7Revisited\Redist")
 
     # lines = [
-    #   "889 0 0 0 8 8 0 8 8 33 8 0 33 8 3 1 0.9 0.7 0.1 0.2 0.3 0 1 2 2 3 3 1 Models/3dmodels/lamp-post-0.obj 1 0 889 0 ",
-    #   "890 0 1 1 43 22 1 23 41 8 44 1 8 20 1 1 1 1 0 0 0 0 0 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 890 0 ",
-    #   "891 0 0 0 32 32 0 32 32 1 32 0 1 32 2 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 891 0 ",
-    #   "892 0 0 0 1 1 0 1 1 0 1 0 0 1 2 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 892 0 "
+    #     "889 0 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 0 func_0379 ",
+    #     "889 1 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 1 func_0379 ",
+    #     "889 2 0 0 8 8 0 8 8 31 8 0 32 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 2 func_0379 ",
+    #     "889 3 0 0 8 8 0 8 8 31 8 0 32 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 3 default "
     # ]
     # sobjs = [ShapeEntry.from_line(sobj) for sobj in lines]
+    # i = 0 
+    # for so in sobjs:
+    #     print(so.vals_03)
+    #     print(so.script)
+    #     print(lines[i])
+    #     i+=1
+    #     print(so.to_line())
 
 
     # shapetable = ShapeTable()
     # shapetable.load(base_gamepath / "data" / "shapetable.dat")
     # print(f"Found {len(shapetable.shapes)} shape entries.")
-    # print(shapetable.shapes[151][0].to_line())
+    # print(shapetable.shapes[889][0].to_line())
     # shapetable.save(base_gamepath / "data" / "shapetable.new")
-
