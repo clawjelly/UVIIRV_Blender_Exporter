@@ -21,4 +21,5 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 
 ## Tutorial
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/ikKG16so9jw?si=FNmjiaOVuegu0WBt" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/ikKG16so9jw/0.jpg)](https://youtu.be/ikKG16so9jw)
+
