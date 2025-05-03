@@ -5,8 +5,6 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 
 ![UVIIRV_Blender_Exporter](img/UVIIRV_Blender_Exporter.PNG)
 
-## Explanation
-
 - **Export Name:** This shows the filename formatted from the data according to the standards set out by ViridianGames.
 - **Export Format:** OBJ or GLTF. At the moment only OBJ is supported.
 - **Shape ID:** The number of the shape. The engine references that.
@@ -21,3 +19,6 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 - **Show in Explorer:** Opens a file browser with the file (Windows only atm).
 - **Start the Game Executeable:** Starts the game.
 
+## Tutorial
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ikKG16so9jw?si=FNmjiaOVuegu0WBt" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
