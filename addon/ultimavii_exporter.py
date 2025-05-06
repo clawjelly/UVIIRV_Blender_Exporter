@@ -7,6 +7,8 @@
 # 0.2:
 # - Adding new name convention
 # - Fixed shapetable script bug
+# 0.3:
+# - fixed frame implementation 
 # --------------------------------------------------------------------------------
 
 bl_info = {
@@ -27,9 +29,7 @@ from bpy.props import StringProperty, IntProperty, FloatProperty, BoolProperty
 from mathutils import Vector, Quaternion, Matrix
 
 # --------------------------------------------------------------------------------
-# Shape Classes
-# --------------------------------------------------------------------------------
-
+# Shape Classes+
 class ShapeType(IntEnum):
     BILLBOARD = 0
     CUBOID = 1
@@ -44,8 +44,8 @@ class ShapeEntry:
 
     def __init__(self, *args, **kwargs ):
         self.id = 0
-        self.count = 0
-        self.type = ShapeType.BILLBOARD
+        self.frame = 0
+        self.type = ShapeType.MESH
         self.scale = Vector((1,1,1))
         self.position = Vector((0,0,0))
         self.filepath = ""
@@ -59,11 +59,11 @@ class ShapeEntry:
     # 890 0 1 1 43 22 1 23 41  8 44 1  8 20 1 1   1   1   0   0   0 0 0 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 890 0 
 
     def __str__(self):
-        return f"<ShapeEntry {self.id} No. {self.count} type {self.type.name}>"
+        return f"<ShapeEntry {self.id:3d} Frame {self.frame:2d} Type {self.type.name}>"
 
     def to_line(self) -> str:
         line = f"{self.id} "
-        line += f"{self.count} "
+        line += f"{self.frame} "
         line += " ".join([f"{v}" for v in self.vals_01])
         line += f" {self.type} "
         line += f"{self.scale.x:g} {self.scale.y:g} {self.scale.z:g} "
@@ -80,7 +80,7 @@ class ShapeEntry:
         se = ShapeEntry()
         values = line.strip().split(" ")
         se.id = int(values[0])
-        se.count = int(values[1])
+        se.frame = int(values[1])
         se.vals_01 = [int(v) for v in values[2:14]] # Todo: Find out, what these vals are
         se.type = ShapeType(int(values[14]))
         se.scale = Vector( (float(values[15]),float(values[16]), float(values[16]) ) )
@@ -100,11 +100,9 @@ class ShapeTable:
     """Reads and writes the shape table"""
 
     def __init__(self, *args, **kwargs ):
-        pass
-
-    def load(self, filepath):
         self.shapes = dict()
 
+    def load(self, filepath):
         with open(filepath) as shapefile:
             for line in shapefile.readlines():
                 shape_obj = ShapeEntry.from_line(line)
@@ -114,9 +112,9 @@ class ShapeTable:
 
     def save(self, filepath):
         lines=[]
-        for so_id, variants in self.shapes.items():
-            for variant in variants:
-                lines.append(variant.to_line())
+        for so_id, frames in self.shapes.items():
+            for frame in frames:
+                lines.append(frame.to_line())
 
         with open(filepath, "w") as shapefile:
             shapefile.writelines(lines)
@@ -276,12 +274,6 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         description="The animation frame. If not animated, set it to 0."
     )
 
-    count: bpy.props.IntProperty(
-        name="Shape No.",
-        default=1,
-        description="The ref number of that shape instance. (Purely for the shapetable.dat)"
-    )
-
     position: bpy.props.FloatVectorProperty(
         name="Tweak Pos",
         description="A position offset for the shape",
@@ -296,6 +288,15 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         default=(1, 1, 1),
         min=0.001, max=100.0,   step=0.1,
         subtype="XYZ"
+    )
+
+    rotation: FloatProperty(
+        name="rotation",
+        description="The Rotation around the Up-Axis.",
+        default=0.0,
+        min=0.0, max=360.0,
+        subtype="ANGLE",
+        unit="NONE"
     )
 
     shape_type : bpy.props.EnumProperty(
@@ -338,7 +339,7 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
     def shape(self):
         shape = ShapeEntry()
         shape.id = self.shape_id
-        shape.count = self.count
+        shape.frame = self.frame
         return self.update_shape(shape)
 
     def update_shape(self, shape):
@@ -486,7 +487,7 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
             shapetable.load(base_gamepath / "data" / "shapetable.dat")
             if settings.shape_id in shapetable.shapes:
                 print(f"Found {settings.shape_id} in shapetable.dat")
-                shapetable.shapes[settings.shape_id][0] = settings.update_shape(shapetable.shapes[settings.shape_id][0])
+                shapetable.shapes[settings.shape_id][settings.frame] = settings.update_shape(shapetable.shapes[settings.shape_id][settings.frame])
                 shapetable.save(base_gamepath / "data" / "shapetable.dat")
             else:
                 print(f"Did not find {settings.shape_id} in shapetable.dat!")
@@ -605,11 +606,11 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
         split = box.split()
         split.prop(settings, "shape_id")
         split.prop(settings, "frame")
-        # box.prop(settings, "count")
         box.prop(settings, "shape_type")
         row = box.split()
         row.prop(settings, "position")
         row.prop(settings, "scale")
+        box.prop(settings, "rotation")
         split = box.split()
         split.prop(addon_prefs, "write_modelnames")
         split.prop(addon_prefs, "write_shapetable")
@@ -673,8 +674,8 @@ if __name__ == "__main__":
     #     print(so.to_line())
 
 
-    # shapetable = ShapeTable()
-    # shapetable.load(base_gamepath / "data" / "shapetable.dat")
-    # print(f"Found {len(shapetable.shapes)} shape entries.")
-    # print(shapetable.shapes[889][0].to_line())
-    # shapetable.save(base_gamepath / "data" / "shapetable.new")
+    shapetable = ShapeTable()
+    shapetable.load(base_gamepath / "data" / "shapetable.dat")
+    print(f"Found {len(shapetable.shapes)} shape entries.")
+    print(shapetable.shapes[889][0].to_line())
+    shapetable.save(base_gamepath / "data" / "shapetable.new")
