@@ -11,8 +11,9 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 - **Frame Number:** If you have more than one frame. I haven't tested that one, so leave at 0 for now.
 - **DrawType:** Leave this at mesh.
 - **Tweak Pos/Tweak Dims:** Use this to change the relative offset/scale
-- **Modelnames:** *Deprecated!* Write filename into the `modelnames.txt` file.
+- **Rotation**: Sets the ingame z-rotation
 - **Shapetable:** Write shape data into `shapetable.dat` file. Necessary to see the object in game.
+- **Copy the texture:** If this is activated, the texture will be copied to the path of the exported model 
 - **Export Shape:** Exports the object to the models folder and adjusts necessary data files (like the shapetable).
 - **X:** Delete asset data.
 - **Open File:** Opens the exported model file in the default model viewing app.
