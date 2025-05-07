@@ -8,7 +8,7 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 - **Export Name:** This shows the filename formatted from the data according to the standards set out by ViridianGames.
 - **Export Format:** OBJ or GLTF. At the moment only OBJ is supported.
 - **Shape ID:** The number of the shape. The engine references that.
-- **Frame Number:** If you have more than one frame. I haven't tested that one, so leave at 0 for now.
+- **Frame Number:** The frame number. (Shapes can have multiple frames, which represent animation, variants, etc.)
 - **DrawType:** Leave this at mesh.
 - **Tweak Pos/Tweak Dims:** Use this to change the relative offset/scale
 - **Rotation**: Sets the ingame z-rotation
