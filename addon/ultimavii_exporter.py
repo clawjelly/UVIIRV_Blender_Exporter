@@ -94,7 +94,7 @@ class ShapeEntry:
             se.original_line = line
         else:
             se.original_line = ""
-        se.scale = Vector( (float(values[15]),float(values[16]), float(values[16]) ) )
+        se.scale = Vector( (float(values[15]),float(values[16]), float(values[17]) ) )
         se.position = Vector( (float(values[18]),float(values[19]), float(values[20]) ) )
         se.rotation = float(values[21])
         
@@ -106,6 +106,12 @@ class ShapeEntry:
         except Exception as e:
             # print(f"WARNING: No script found for shape {values[0]}!")
             se.script = "default"
+
+        if se.id==252 and se.frame==0:
+            print(f"Shape {se.id}-{se.frame} Sca: {values[15:18]} {se.scale}")
+            print(f"Shape {se.id}-{se.frame} Pos: {values[18:21]} {se.position}")
+            print(f"Shape {se.id}-{se.frame} Rot: {values[21]} {se.rotation}")
+
         return se
 
 
@@ -291,6 +297,7 @@ def export_object_to_OBJ(obj, context):
         obj.matrix_world = Matrix()
 
     # export shape mesh
+    select(obj)
     bpy.ops.wm.obj_export(
         filepath=settings.export_path, 
         check_existing=False, 
@@ -659,15 +666,17 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
         return context.active_object is not None
 
     def execute(self, context):
+        original_selection = [o for o in context.selected_objects]
         output_messages = []
         for obj in context.selected_objects:
             if not obj.uvii_export_settings.is_uvii:
                 continue
             output_messages += export_object_to_OBJ(obj, context)
+        select(*original_selection)
         bpy.context.window_manager.popup_menu(
             lambda self, ctx: ( [self.layout.label(text=x) for x in output_messages] ),
             title="Export Report", 
-            icon='INFO')            
+            icon='INFO')          
         return {'FINISHED'}
 
 class SCRIPTS_OT_uvii_open_exported_file(bpy.types.Operator):
