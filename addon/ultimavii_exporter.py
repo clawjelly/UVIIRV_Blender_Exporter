@@ -13,16 +13,21 @@
 # - added rotation
 # - added multi-shape-export
 # - added texture copy option
+# 0.5:
+# - adding multi-object export
+# - added packing feature
+# - deleted deprecated modelnames.txt 
 # --------------------------------------------------------------------------------
 
 bl_info = {
     "name": "Ultima VII Revisited Exporter",
     "author": "Oliver Reischl <clawjelly@gmail.net>",
-    "version": (0, 4),
+    "version": (0, 5),
     "blender": (4, 40, 0),
     "description": "Allows to export meshes directly into the game.",
 }
 
+import zipfile
 import math, subprocess
 from enum import IntEnum
 from pathlib import Path
@@ -85,6 +90,10 @@ class ShapeEntry:
         se.vals_01 = [int(v) for v in values[2:14]] # Todo: Find out, what these vals are
 
         se.type = ShapeType(int(values[14]))
+        if se.type != ShapeType.MESH:
+            se.original_line = line
+        else:
+            se.original_line = ""
         se.scale = Vector( (float(values[15]),float(values[16]), float(values[16]) ) )
         se.position = Vector( (float(values[18]),float(values[19]), float(values[20]) ) )
         se.rotation = float(values[21])
@@ -117,7 +126,9 @@ class ShapeTable:
         return cls._instance
 
     def load(self, filepath, force=False):
+        # print(f"ShapeTable: is_loaded: {self.is_loaded}, force: {force} => {self.is_loaded and not force}")
         if self.is_loaded and not force:
+            print(f"U7R-ShapeTable: Using cached ShapeTable data.")
             return
         self.shapes = dict()
         with open(filepath) as shapefile:
@@ -126,6 +137,8 @@ class ShapeTable:
                 if not shape_obj.id in self.shapes:
                     self.shapes[shape_obj.id] = []
                 self.shapes[shape_obj.id].append(shape_obj)
+        self.is_loaded = True
+        print("U7R-ShapeTable: All shapes loaded.")
 
     def save(self, filepath):
         lines=[]
@@ -135,6 +148,11 @@ class ShapeTable:
 
         with open(filepath, "w") as shapefile:
             shapefile.writelines(lines)
+
+    def restore_shape(self, shape_id, frame):
+        if self.shapes[shape_id][frame].original_line:
+            print(f"Original Line: {self.shapes[shape_id][frame].original_line}")
+        # self.shapes[sh.shape_id][sh.frame] = ShapeEntry.from_line()
 
     def update_shapes(self, *shape_settings):
         for sh in shape_settings:
@@ -253,6 +271,96 @@ def replace_mdl_texture_entry(mtl_path, tex_path):
         mat_file.writelines( lines )
 
 # --------------------------------------------------------------------------------
+# Export Functionality
+# --------------------------------------------------------------------------------
+
+def export_object_to_OBJ(obj, context):
+    addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
+    base_gamepath = Path(addon_prefs.game_path)
+    # obj = context.active_object
+    # need to make sure active object is selected, otherwise exporting empty file!
+    obj.select_set(True)        
+    settings = obj.uvii_export_settings
+    export_path = full_export_filepath(obj)
+    settings.export_path = str(export_path)
+
+    print(f"Exporting {obj.name} to {str(export_path)}")
+
+    if addon_prefs.reset_matrix:
+        orig_matrix = obj.matrix_world.copy()
+        obj.matrix_world = Matrix()
+
+    # export shape mesh
+    bpy.ops.wm.obj_export(
+        filepath=settings.export_path, 
+        check_existing=False, 
+        apply_modifiers=True, 
+        export_selected_objects=True,
+        export_uv=True,
+        export_normals=True,
+        export_materials=True,
+        export_triangulated_mesh=True)
+
+    if addon_prefs.reset_matrix:
+        obj.matrix_world = orig_matrix
+
+    output_message = [f"Successfully exported '{full_export_filepath(obj).name}'"]
+
+    # fix shape mesh texture path
+    if settings.export_format == "OBJ" and len(obj.data.materials)>0:
+        mtl_path = Path(settings.export_path).with_suffix(".mtl")            
+        tex_path = get_color_tex_path(obj.data.materials[0])
+        if not mtl_path.exists():
+            bpy.context.window_manager.popup_menu(
+                lambda self, ctx: ( [self.layout.label(text=x) for x in [f"{mtl_path} not found."]] ),
+                title="Warning", 
+                icon='ERROR')
+            return {'CANCELLED'}
+        if tex_path==None:
+            bpy.context.window_manager.popup_menu(
+                lambda self, ctx: ( [self.layout.label(text=x) for x in [f"Couldn't find texture for {obj.name}"]] ),
+                title="Warning", 
+                icon='ERROR')   
+            return {'CANCELLED'}
+        else:
+            if export_path.parent!=tex_path.parent:
+                if addon_prefs.copy_texture:
+                    new_tex_path = export_path.with_name(tex_path.name)
+                    output_message.append(f"Copied texture {tex_path.name} to {new_tex_path}")
+                    shutil.copy(tex_path, new_tex_path)
+                    tex_path=new_tex_path
+                replace_mdl_texture_entry(mtl_path, tex_path.relative_to(base_gamepath))
+            else:
+                bpy.context.window_manager.popup_menu(
+                    lambda self, ctx: ( [self.layout.label(text=x) for x in ["Texture is not located in the model directory!", "It will not show up!"]] ),
+                    title="Warning", 
+                    icon='ERROR')
+
+    # add shape data to shapetable.dat
+    if addon_prefs.write_shapetable:
+        # collect entries
+        entries = []
+        entries.append(settings)
+        for o in obj.children:
+            if o.uvii_export_settings.is_uvii and o.uvii_export_settings.is_shape_ref:
+                o.uvii_export_settings.export_path = str(export_path)
+                entries.append(o.uvii_export_settings)
+        # update shapetable
+        shapetable = ShapeTable.instance()
+        shapetable.load(base_gamepath / "data" / "shapetable.dat")
+        shapetable.update_shapes(*entries)
+        shapetable.save(base_gamepath / "data" / "shapetable.dat")
+
+        output_message.append("Updated Shapes in shapetable.dat: "+", ".join([f"S{e.shape_id:04d}F{e.frame:02d}" for e in entries]))
+
+    return output_message
+
+    bpy.context.window_manager.popup_menu(
+        lambda self, ctx: ( [self.layout.label(text=x) for x in output_message] ),
+        title="Export Report", 
+        icon='INFO')
+
+# --------------------------------------------------------------------------------
 # Addon Prefs
 # --------------------------------------------------------------------------------
 
@@ -285,6 +393,12 @@ class SCRIPTS_AP_uvii_settings(AddonPreferences):
         name="Copy the texture",
         default=True,
         description="Copy the texture to the model path."
+    )
+
+    reset_matrix: bpy.props.BoolProperty(
+        name="Reset Transforms",
+        default=False,
+        description="Resets all transforms during export. Useful for aligning objects in the scene."
     )
 
     def draw(self, context):
@@ -322,6 +436,15 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
             ("GLTF", "GLTF", "GLTF (Not supported yet)"),
             ]
         )
+
+    zip_path: bpy.props.StringProperty(
+        name="Asset Zip Path",
+        description="Where the packed asset zip was saved to.",
+        default="",
+        subtype="FILE_PATH",
+        # subtype="NONE",
+        maxlen=0
+    )
 
     shape_id: bpy.props.IntProperty(
         name="Shape ID",
@@ -536,81 +659,15 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
         return context.active_object is not None
 
     def execute(self, context):
-        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
-        base_gamepath = Path(addon_prefs.game_path)
-        obj = context.active_object
-        # need to make sure active object is selected, otherwise exporting empty file!
-        obj.select_set(True)        
-        settings = obj.uvii_export_settings
-        export_path = full_export_filepath(obj)
-        settings.export_path = str(export_path)
-
-        # export shape mesh
-        bpy.ops.wm.obj_export(
-            filepath=settings.export_path, 
-            check_existing=False, 
-            apply_modifiers=True, 
-            export_selected_objects=True,
-            export_uv=True,
-            export_normals=True,
-            export_materials=True,
-            export_triangulated_mesh=True)
-
-
-        # fix shape mesh texture path
-        if settings.export_format == "OBJ" and len(obj.data.materials)>0:
-            mtl_path = Path(settings.export_path).with_suffix(".mtl")            
-            tex_path = get_color_tex_path(obj.data.materials[0])
-            if not mtl_path.exists():
-                bpy.context.window_manager.popup_menu(
-                    lambda self, ctx: ( [self.layout.label(text=x) for x in [f"{mtl_path} not found."]] ),
-                    title="Warning", 
-                    icon='ERROR')
-                return {'CANCELLED'}
-            if tex_path==None:
-                bpy.context.window_manager.popup_menu(
-                    lambda self, ctx: ( [self.layout.label(text=x) for x in [f"Couldn't find texture for {obj.name}"]] ),
-                    title="Warning", 
-                    icon='ERROR')   
-                return {'CANCELLED'}
-            else:
-                if export_path.parent!=tex_path.parent:
-                    if addon_prefs.copy_texture:
-                        new_tex_path = export_path.with_name(tex_path.name)
-                        print(f"Will copy texture from {tex_path} to {new_tex_path}!")
-                        shutil.copy(tex_path, new_tex_path)
-                        tex_path=new_tex_path
-                    replace_mdl_texture_entry(mtl_path, tex_path.relative_to(base_gamepath))
-                else:
-                    bpy.context.window_manager.popup_menu(
-                        lambda self, ctx: ( [self.layout.label(text=x) for x in ["Texture is not located in the model directory!", "It will not show up!"]] ),
-                        title="Warning", 
-                        icon='ERROR')
-
-        # DEPRECATED add mesh name to modelnames.txt
-        if addon_prefs.write_modelnames:
-            add_to_modelnames(settings.mesh_name())
-
-        # add shape data to shapetable.dat
-        if addon_prefs.write_shapetable:
-            # collect entries
-            entries = []
-            entries.append(settings)
-            for o in obj.children:
-                if o.uvii_export_settings.is_uvii and o.uvii_export_settings.is_shape_ref:
-                    o.uvii_export_settings.export_path = str(export_path)
-                    entries.append(o.uvii_export_settings)
-            # update shapetable
-            shapetable = ShapeTable.instance()
-            shapetable.load(base_gamepath / "data" / "shapetable.dat")
-            shapetable.update_shapes(*entries)
-            shapetable.save(base_gamepath / "data" / "shapetable.dat")
-
+        output_messages = []
+        for obj in context.selected_objects:
+            if not obj.uvii_export_settings.is_uvii:
+                continue
+            output_messages += export_object_to_OBJ(obj, context)
         bpy.context.window_manager.popup_menu(
-            lambda self, ctx: ( [self.layout.label(text=x) for x in [f"Successfully exported '{full_export_filepath(obj).name}"]] ),
-            title="Info", 
-            icon='INFO')
-
+            lambda self, ctx: ( [self.layout.label(text=x) for x in output_messages] ),
+            title="Export Report", 
+            icon='INFO')            
         return {'FINISHED'}
 
 class SCRIPTS_OT_uvii_open_exported_file(bpy.types.Operator):
@@ -646,6 +703,23 @@ class SCRIPTS_OT_uvii_open_explorer_to_file(bpy.types.Operator):
         subprocess.Popen(f'explorer /select,"{settings.export_path}"')
         return {'FINISHED'}
 
+class SCRIPTS_OT_restore_shapetable_entry(bpy.types.Operator):
+    """Restore """
+    bl_idname = "scripts.restore_shapetable_entry"
+    bl_label = "Restore Shape Data"
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        settings = context.active_object.uvii_export_settings
+        shapetable = ShapeTable.instance()
+        shapetable.load(base_gamepath / "data" / "shapetable.dat")
+        shapetable.restore_shape(settings.shape_id, settings.frame)
+        # shapetable.save(base_gamepath / "data" / "shapetable.dat")        
+        return {'FINISHED'}
+
 class SCRIPTS_OT_uvii_start_game(bpy.types.Operator):
     """Open the exported file with the default viewer."""
     bl_idname = "scripts.uvii_start_game"
@@ -671,6 +745,88 @@ class SCRIPTS_OT_uvii_start_game(bpy.types.Operator):
         subprocess.Popen(str(game_exe), cwd=addon_prefs.game_path, shell=True)
         return {'FINISHED'}
 
+class SCRIPTS_OT_pack_uvii_asset(bpy.types.Operator):
+    """Pack Asset to Zip"""
+    bl_idname = "scripts.pack_uvii_asset"
+    bl_label = "Pack Asset to Zip"
+
+    filter_glob: StringProperty(
+        default="*.zip",
+        options={'HIDDEN'},
+        maxlen=255,  # Max internal buffer length, longer would be clamped.
+    )
+
+    filepath: StringProperty()
+    filename:  StringProperty()
+    directory:  StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        if context.active_object==None:
+            return False
+        return True
+
+    def invoke(self, context, _event):
+        """This is called before any window opens."""
+        # set filepath to a default. This will be selected first.
+        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
+        settings = context.active_object.uvii_export_settings
+        if settings.zip_path != "":
+            self.filepath = settings.zip_path
+        else:
+            self.filepath = str(full_export_filepath(context.active_object).with_suffix(".zip"))
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        """This is called after the window opened."""
+        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
+        print(f"Filepath: {self.filepath}")
+        if "." not in self.filepath or self.filepath[-4]!=".zip":
+            self.filepath = self.filepath.split(".")[0]+".zip"
+        settings = context.active_object.uvii_export_settings
+        settings.zip_path = self.filepath
+        if Path(self.filepath).exists():
+            Path(self.filepath).unlink()
+        with zipfile.ZipFile(self.filepath, mode="w") as archive:
+            # obj
+            export_files = []
+            export_shapes = []
+            for obj in context.selected_objects:
+                if not obj.uvii_export_settings.is_uvii:
+                    continue
+                asset_path = full_export_filepath(obj)
+                if asset_path not in export_files:
+                    export_files.append(asset_path)
+                # texture
+                if len(obj.data.materials)>0:
+                    tex_path = get_color_tex_path(obj.data.materials[0])
+                    if tex_path not in export_files:
+                        export_files.append(tex_path)
+                    # archive.write(tex_path, arcname=tex_path.name)
+                # shapetable.dat
+                entries = []
+                if addon_prefs.write_shapetable:
+                    # collect entries
+                    obj.uvii_export_settings.zip_path = self.filepath
+                    entries.append(obj.uvii_export_settings)
+                    print(f"Main Settings: {obj.uvii_export_settings.shape_id}-{obj.uvii_export_settings.frame}")
+                    for o in obj.children:
+                        if o.uvii_export_settings.is_uvii and o.uvii_export_settings.is_shape_ref:
+                            print(f"Child Settings: {o.uvii_export_settings.shape_id}-{o.uvii_export_settings.frame}")
+                            entries.append(o.uvii_export_settings)
+                    shapetable = ShapeTable.instance()
+                    shapetable.load(base_gamepath / "data" / "shapetable.dat")
+                    shapetable.update_shapes(*entries)
+                    export_shapes += [shapetable.shapes[e.shape_id][e.frame] for e in entries]
+                    # lines = "".join([shapetable.shapes[e.shape_id][e.frame].to_line() for e in entries])
+                    # archive.writestr("shapetable.dat", lines)
+            for export_file in export_files:
+                archive.write(export_file, arcname=export_file.name)
+            export_shapes.sort(key=lambda l: float(l.id)+float(l.frame)*.001)
+            line_str = "".join([s.to_line() for s in export_shapes])
+            archive.writestr("shapetable.dat", line_str)
+        return {'FINISHED'}
 # --------------------------------------------------------------------------------
 # User Interface
 # --------------------------------------------------------------------------------
@@ -699,19 +855,34 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
             return            
         if context.active_object == None:
             box.label(text="Nothing selected.")
+            box.separator(type="LINE")
+            box.operator("scripts.uvii_start_game", icon="GHOST_ENABLED")
+            return
+        if len(context.selected_objects)>1:
+            show_ui = False
+            for obj in context.selected_objects:
+                show_ui = show_ui or obj.uvii_export_settings.is_uvii
+            if show_ui:
+                box.operator("scripts.uvii_export_asset", text="Export all selected Shapes")
+                box.separator(type="LINE")
+                box.operator("scripts.pack_uvii_asset", icon="PACKAGE", text="Pack all selected Shapes")
+            else:
+                box.label(text="Not assets.")
+            box.operator("scripts.uvii_start_game", icon="GHOST_ENABLED")
             return
         settings = context.active_object.uvii_export_settings
         if context.active_object.type!="MESH" and not settings.is_shape_ref:
             box.label(text="Not a mesh.")
+            box.separator(type="LINE")
+            box.operator("scripts.uvii_start_game", icon="GHOST_ENABLED")
             return
         if not context.active_object.uvii_export_settings.is_uvii:
             box.label(text="Not an asset.")
             box.operator("scripts.uvii_create_shape")
+            box.separator(type="LINE")
+            box.operator("scripts.uvii_start_game", icon="GHOST_ENABLED")
             return
 
-        # split = box.split(factor=.9, align=True)
-        # split.prop(settings, "export_path")
-        # split.operator("scripts.uvii_select_filepath", text="", icon="FILE_FOLDER")
         if not settings.is_shape_ref:
             box.label(text=f"Export Name:   \"{model_to_filename(context.active_object)}\"")
         box.prop(settings, "export_format")
@@ -729,15 +900,18 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
         # split.prop(addon_prefs, "write_modelnames")
         split.prop(addon_prefs, "write_shapetable")
         split.prop(addon_prefs, "copy_texture")
+        split.prop(addon_prefs, "reset_matrix")
         split = box.split(factor=.9)
         split.operator("scripts.uvii_export_asset")
         split.operator("scripts.uvii_undo_shape", text="", icon="X")
         box.separator(type="LINE")
         if context.active_object.type=="MESH":
             box.operator("scripts.uvii_add_shape", icon="ADD")
+        # box.operator("scripts.restore_shapetable_entry")
         row = box.split()
         row.operator("scripts.uvii_open_exported_file", icon="FILE_3D")
         row.operator("scripts.uvii_open_explorer_to_file", icon="FILE_FOLDER")
+        box.operator("scripts.pack_uvii_asset", icon="PACKAGE")
         box.operator("scripts.uvii_start_game", icon="GHOST_ENABLED")
 
 
@@ -755,7 +929,9 @@ blender_classes=[
     SCRIPTS_PG_uvii_object_settings,
     SCRIPTS_OT_uvii_open_exported_file,
     SCRIPTS_OT_uvii_open_explorer_to_file,
+    SCRIPTS_OT_restore_shapetable_entry,
     SCRIPTS_OT_uvii_start_game,
+    SCRIPTS_OT_pack_uvii_asset,
     SCRIPTS_PT_uvii_user_interface
 ]
 
