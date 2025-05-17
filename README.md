@@ -6,6 +6,7 @@ This project aims to ease the export of mesh objects into the [Ultima VII: Revis
 ![UVIIRV_Blender_Exporter](img/UVIIRV_Blender_Exporter.PNG)
 
 - **Export Name:** This shows the filename formatted from the data according to the standards set out by ViridianGames.
+- **Add shape/frame suffix:** Wether the exporter adds the "_0378x04"-suffix to the object name.
 - **Export Format:** OBJ or GLTF. At the moment only OBJ is supported.
 - **Shape ID:** The number of the shape. The engine references that.
 - **Frame Number:** The frame number. (Shapes can have multiple frames, which represent animation, variants, etc.)

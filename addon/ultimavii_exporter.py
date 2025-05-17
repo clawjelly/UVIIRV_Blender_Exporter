@@ -14,15 +14,19 @@
 # - added multi-shape-export
 # - added texture copy option
 # 0.5:
-# - adding multi-object export
+# - added multi-object export
 # - added packing feature
-# - deleted deprecated modelnames.txt 
+# - deleted deprecated modelnames.txt
+# - various bugfixing
+# 0.6:
+# - made shape-id/frame suffix optional
+# - more bugfixing
 # --------------------------------------------------------------------------------
 
 bl_info = {
     "name": "Ultima VII Revisited Exporter",
     "author": "Oliver Reischl <clawjelly@gmail.net>",
-    "version": (0, 5),
+    "version": (0, 6),
     "blender": (4, 40, 0),
     "description": "Allows to export meshes directly into the game.",
 }
@@ -107,10 +111,10 @@ class ShapeEntry:
             # print(f"WARNING: No script found for shape {values[0]}!")
             se.script = "default"
 
-        if se.id==252 and se.frame==0:
-            print(f"Shape {se.id}-{se.frame} Sca: {values[15:18]} {se.scale}")
-            print(f"Shape {se.id}-{se.frame} Pos: {values[18:21]} {se.position}")
-            print(f"Shape {se.id}-{se.frame} Rot: {values[21]} {se.rotation}")
+        # if se.id==252 and se.frame==0:
+        #     print(f"Shape {se.id}-{se.frame} Sca: {values[15:18]} {se.scale}")
+        #     print(f"Shape {se.id}-{se.frame} Pos: {values[18:21]} {se.position}")
+        #     print(f"Shape {se.id}-{se.frame} Rot: {values[21]} {se.rotation}")
 
         return se
 
@@ -136,7 +140,10 @@ class ShapeTable:
         if self.is_loaded and not force:
             print(f"U7R-ShapeTable: Using cached ShapeTable data.")
             return
+        wm = bpy.context.window_manager
+        wm.progress_begin(0, 100)
         self.shapes = dict()
+        wm.progress_update(66)
         with open(filepath) as shapefile:
             for line in shapefile.readlines():
                 shape_obj = ShapeEntry.from_line(line)
@@ -145,6 +152,7 @@ class ShapeTable:
                 self.shapes[shape_obj.id].append(shape_obj)
         self.is_loaded = True
         print("U7R-ShapeTable: All shapes loaded.")
+        wm.progress_end()
 
     def save(self, filepath):
         lines=[]
@@ -197,7 +205,10 @@ def get_hierarchy(*objs):
 def model_to_filename(obj):
     """ Generates a standardized obj name """
     # <object name>_<shape number>x<frame number>
-    return f"{obj.name.lower()}_{obj.uvii_export_settings.shape_id:004d}x{obj.uvii_export_settings.frame:002d}"
+    settings = obj.uvii_export_settings
+    modelname = f"{obj.name.lower().split('.')[0]}"
+    suffix = f"_{settings.shape_id:004d}x{settings.frame:002d}" if settings.add_shape_frame_suffix else ""
+    return f"{modelname}{suffix}"
 
 # def parent_to_filename(obj):
 #     """ Generates a standardized obj name """
@@ -432,6 +443,12 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         maxlen=0
     )
 
+    add_shape_frame_suffix: bpy.props.BoolProperty(
+        name="Add shape/frame suffix",
+        default=False,
+        description="My Boolean Value."
+    )
+
     export_format : bpy.props.EnumProperty(
         name="Export Format",
         description="The file type it will be exported to.",
@@ -475,6 +492,7 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         name="Tweak Pos",
         description="A position offset for the shape",
         default=(0.0, 0.0, 0.0),
+        precision=3,
         min=-100.0, max=100.0,  step=0.1,
         subtype="TRANSLATION"
     )
@@ -483,6 +501,7 @@ class SCRIPTS_PG_uvii_object_settings(PropertyGroup):
         name="Tweak Dims",
         description="An additional scale for the shape.",
         default=(1, 1, 1),
+        precision=3,
         min=0.001, max=100.0,   step=0.1,
         subtype="XYZ"
     )
@@ -612,6 +631,18 @@ class SCRIPTS_OT_uvii_undo_shape(bpy.types.Operator):
         context.active_object.uvii_export_settings.is_uvii = False
         return {'FINISHED'}
 
+class SCRIPTS_OT_uvii_reload_shapedata(bpy.types.Operator):
+    """Use this if you changed shapetable.dat outside of Blender"""
+    bl_idname = "scripts.reload_shapedata"
+    bl_label = "Reload shapedata"
+
+    def execute(self, context):
+        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
+        base_gamepath = Path(addon_prefs.game_path)
+        shapetable = ShapeTable.instance()
+        shapetable.load(base_gamepath / "data" / "shapetable.dat", force=True)
+        return {'FINISHED'}
+
 class SCRIPTS_OT_uvii_select_filepath(bpy.types.Operator):
     """Select export filepath"""
     bl_idname = "scripts.uvii_select_filepath"
@@ -668,11 +699,21 @@ class SCRIPTS_OT_uvii_export_asset(bpy.types.Operator):
     def execute(self, context):
         original_selection = [o for o in context.selected_objects]
         output_messages = []
-        for obj in context.selected_objects:
-            if not obj.uvii_export_settings.is_uvii:
-                continue
-            output_messages += export_object_to_OBJ(obj, context)
-        select(*original_selection)
+        if len(context.selected_objects)==0:
+            output_messages += export_object_to_OBJ(context.active_object, context)
+        else:
+            wm = bpy.context.window_manager
+            wm.progress_begin(0, len(context.selected_objects))
+            i=1
+            for obj in context.selected_objects:
+                wm.progress_update(i)
+                i+=1
+                if not obj.uvii_export_settings.is_uvii:
+                    continue
+                output_messages += export_object_to_OBJ(obj, context)
+            if len(original_selection)>0:
+                select(*original_selection)
+            wm.progress_end()
         bpy.context.window_manager.popup_menu(
             lambda self, ctx: ( [self.layout.label(text=x) for x in output_messages] ),
             title="Export Report", 
@@ -710,23 +751,6 @@ class SCRIPTS_OT_uvii_open_explorer_to_file(bpy.types.Operator):
         settings = context.active_object.uvii_export_settings
         print(f'explorer /select,"{settings.export_path}"')
         subprocess.Popen(f'explorer /select,"{settings.export_path}"')
-        return {'FINISHED'}
-
-class SCRIPTS_OT_restore_shapetable_entry(bpy.types.Operator):
-    """Restore """
-    bl_idname = "scripts.restore_shapetable_entry"
-    bl_label = "Restore Shape Data"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        settings = context.active_object.uvii_export_settings
-        shapetable = ShapeTable.instance()
-        shapetable.load(base_gamepath / "data" / "shapetable.dat")
-        shapetable.restore_shape(settings.shape_id, settings.frame)
-        # shapetable.save(base_gamepath / "data" / "shapetable.dat")        
         return {'FINISHED'}
 
 class SCRIPTS_OT_uvii_start_game(bpy.types.Operator):
@@ -790,6 +814,7 @@ class SCRIPTS_OT_pack_uvii_asset(bpy.types.Operator):
     def execute(self, context):
         """This is called after the window opened."""
         addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
+        base_gamepath = Path(addon_prefs.game_path)
         print(f"Filepath: {self.filepath}")
         if "." not in self.filepath or self.filepath[-4]!=".zip":
             self.filepath = self.filepath.split(".")[0]+".zip"
@@ -801,7 +826,13 @@ class SCRIPTS_OT_pack_uvii_asset(bpy.types.Operator):
             # obj
             export_files = []
             export_shapes = []
-            for obj in context.selected_objects:
+
+            selected_objects = []
+            if len(context.selected_objects)==0:
+                selected_objects.append(context.active_object)
+            else:
+                selected_objects = [o for o in context.selected_objects]
+            for obj in selected_objects:
                 if not obj.uvii_export_settings.is_uvii:
                     continue
                 asset_path = full_export_filepath(obj)
@@ -894,6 +925,7 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
 
         if not settings.is_shape_ref:
             box.label(text=f"Export Name:   \"{model_to_filename(context.active_object)}\"")
+        box.prop(settings, "add_shape_frame_suffix")
         box.prop(settings, "export_format")
         split = box.split()
         split.prop(settings, "shape_id")
@@ -915,7 +947,9 @@ class SCRIPTS_PT_uvii_user_interface(bpy.types.Panel):
         split.operator("scripts.uvii_undo_shape", text="", icon="X")
         box.separator(type="LINE")
         if context.active_object.type=="MESH":
-            box.operator("scripts.uvii_add_shape", icon="ADD")
+            split = box.split(factor=.9)
+            split.operator("scripts.uvii_add_shape", icon="ADD")
+            split.operator("scripts.reload_shapedata", text="", icon="LOOP_BACK")
         # box.operator("scripts.restore_shapetable_entry")
         row = box.split()
         row.operator("scripts.uvii_open_exported_file", icon="FILE_3D")
@@ -938,7 +972,7 @@ blender_classes=[
     SCRIPTS_PG_uvii_object_settings,
     SCRIPTS_OT_uvii_open_exported_file,
     SCRIPTS_OT_uvii_open_explorer_to_file,
-    SCRIPTS_OT_restore_shapetable_entry,
+    SCRIPTS_OT_uvii_reload_shapedata,
     SCRIPTS_OT_uvii_start_game,
     SCRIPTS_OT_pack_uvii_asset,
     SCRIPTS_PT_uvii_user_interface
@@ -956,30 +990,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
-    print("------------ New Round ------------")
-
-    base_gamepath = Path(r"A:\Ultima7Revisited\Redist")
-
-    # lines = [
-    #     "889 0 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 0 func_0379 ",
-    #     "889 1 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 1 func_0379 ",
-    #     "889 2 0 0 8 8 0 8 8 31 8 0 32 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 2 func_0379 ",
-    #     "889 3 0 0 8 8 0 8 8 31 8 0 32 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 3 default "
-    # ]
-    # sobjs = [ShapeEntry.from_line(sobj) for sobj in lines]
-    # i = 0 
-    # for so in sobjs:
-    #     print(so.vals_03)
-    #     print(so.script)
-    #     print(lines[i])
-    #     i+=1
-    #     print(so.to_line())
-
-
-    # shapetable = ShapeTable.instance()
-    # shapetable.load(base_gamepath / "data" / "shapetable.dat")
-    # print(f"Found {len(shapetable.shapes)} shape entries.")
-    # print("889 0 0 0 8 8 0 8 8 33 8 0 33 8 0 1 1 1 0 0 0 0 1 2 2 3 3 1 Models/3dmodels/zzwrongcube.obj 1 0 889 0 func_0379 ")
-    # print(shapetable.shapes[889][0].to_line())
-    # shapetable.save(base_gamepath / "data" / "shapetable.new")
