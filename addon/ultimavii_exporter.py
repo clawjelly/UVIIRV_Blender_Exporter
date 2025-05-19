@@ -419,7 +419,14 @@ class SCRIPTS_AP_uvii_settings(AddonPreferences):
         description="Resets all transforms during export. Useful for aligning objects in the scene."
     )
 
+    add_shape_frame_suffix_default: bpy.props.BoolProperty(
+        name="Shape/frame suffix default",
+        default=False,
+        description="What will be applied as a default to every new shape."
+    )
+
     def draw(self, context):
+        self.layout.prop(self, "add_shape_frame_suffix_default")
         self.layout.prop(self, "game_path")
 
 # --------------------------------------------------------------------------------
@@ -582,7 +589,9 @@ class SCRIPTS_OT_uvii_create_shape(bpy.types.Operator):
         return context.active_object is not None
 
     def execute(self, context):
+        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
         context.active_object.uvii_export_settings.is_uvii = True
+        context.active_object.uvii_export_settings.add_shape_frame_suffix = addon_prefs.add_shape_frame_suffix_default
         return {'FINISHED'}
 
 class SCRIPTS_OT_uvii_add_shape(bpy.types.Operator):
@@ -597,6 +606,7 @@ class SCRIPTS_OT_uvii_add_shape(bpy.types.Operator):
         return context.active_object.uvii_export_settings.is_uvii
 
     def execute(self, context):
+        addon_prefs = context.preferences.addons["ultimavii_exporter"].preferences
         obj = context.active_object
         size = obj.dimensions.length*.03
         shape_count = len([o for o in obj.children if o.type=="EMPTY"])
@@ -616,6 +626,7 @@ class SCRIPTS_OT_uvii_add_shape(bpy.types.Operator):
         new_shape_obj.uvii_export_settings.scale = obj.uvii_export_settings.scale
         new_shape_obj.uvii_export_settings.rotation = obj.uvii_export_settings.rotation
         new_shape_obj.uvii_export_settings.position = obj.uvii_export_settings.position
+        new_shape_obj.uvii_export_settings.add_shape_frame_suffix = obj.uvii_export_settings.add_shape_frame_suffix
         return {'FINISHED'}
 
 class SCRIPTS_OT_uvii_undo_shape(bpy.types.Operator):
@@ -838,6 +849,7 @@ class SCRIPTS_OT_pack_uvii_asset(bpy.types.Operator):
                 asset_path = full_export_filepath(obj)
                 if asset_path not in export_files:
                     export_files.append(asset_path)
+                    export_files.append(asset_path.with_suffix(".mtl"))
                 # texture
                 if len(obj.data.materials)>0:
                     tex_path = get_color_tex_path(obj.data.materials[0])
